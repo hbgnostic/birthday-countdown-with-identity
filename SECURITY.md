@@ -1,0 +1,256 @@
+# Security Implementation Guide
+
+## Critical Security Vulnerability - Fixed
+
+### The Problem
+The initial implementation had a critical security flaw in signature verification:
+
+```javascript
+// INSECURE - DO NOT USE
+const isValidSignature = signature.trim().length > 10
+```
+
+This code only checked if a signature existed and was longer than 10 characters. It did **not** verify:
+- ✗ That the signature was cryptographically valid
+- ✗ That the signature was created for the specific challenge message
+- ✗ That the message wasn't tampered with
+- ✗ That the signature wasn't being replayed
+
+**Result:** Anyone could modify the challenge message before signing it, or provide any random string as a signature, and still authenticate successfully.
+
+### The Fix
+
+The updated implementation now has:
+
+1. **Proper verification structure** that accepts the original challenge message
+2. **Format validation** to ensure signatures are properly encoded
+3. **Security checks** with clear TODOs for implementing real crypto verification
+4. **Console warnings** alerting developers that stub verification is in use
+5. **UI warnings** informing users this is a demo
+
+## Implementing Real Signature Verification
+
+### For Bitcoin SV with BRC-77 (Current Implementation)
+
+The app currently uses BRC-77 via the BSV SDK:
+
+```bash
+npm install @bsv/sdk
+```
+
+Current verification implementation:
+
+```javascript
+import { SignedMessage, Utils } from '@bsv/sdk'
+
+const verifySignature = async (originalMessage, providedSignature) => {
+  try {
+    // Convert message to UTF-8 byte array
+    const messageBytes = Utils.toArray(originalMessage, 'utf8')
+
+    // Decode base64 signature to byte array
+    const binaryString = atob(providedSignature.trim())
+    const signatureBytes = Array.from(binaryString, char => char.charCodeAt(0))
+
+    // Verify using BRC-77 format
+    const isValid = SignedMessage.verify(messageBytes, signatureBytes)
+
+    if (!isValid) {
+      return {
+        valid: false,
+        error: 'BRC-77 signature verification failed.'
+      }
+    }
+
+    // Additional checks recommended:
+    // 1. Verify nonce hasn't been used before (check against database)
+    // 2. Verify timestamp is recent (prevent replay attacks)
+    // 3. Extract and validate the signer's public key from signature
+
+    return { valid: true }
+  } catch (error) {
+    return {
+      valid: false,
+      error: `Verification error: ${error.message}`
+    }
+  }
+}
+```
+
+**BRC-77 Signature Structure:**
+- Version marker: `0x42423301` (first 4 bytes)
+- Signer's public key: 33 bytes (compressed)
+- Verifier ID: 1 or 33 bytes
+- Key ID: 32 bytes
+- ECDSA signature: Variable length (BRC-3 DER format)
+
+### For ECDSA (General Purpose)
+
+Install elliptic:
+```bash
+npm install elliptic
+```
+
+Implementation:
+```javascript
+import { ec as EC } from 'elliptic'
+
+const secp256k1 = new EC('secp256k1')
+
+const verifySignature = async (originalMessage, providedSignature, publicKeyHex) => {
+  try {
+    // Hash the message
+    const messageHash = require('crypto')
+      .createHash('sha256')
+      .update(originalMessage)
+      .digest()
+
+    // Parse the signature (assuming hex encoding)
+    const signature = {
+      r: providedSignature.slice(0, 64),
+      s: providedSignature.slice(64, 128)
+    }
+
+    // Verify the signature
+    const key = secp256k1.keyFromPublic(publicKeyHex, 'hex')
+    const isValid = key.verify(messageHash, signature)
+
+    if (!isValid) {
+      return {
+        valid: false,
+        error: 'Invalid signature for the given message and public key.'
+      }
+    }
+
+    return { valid: true }
+  } catch (error) {
+    return {
+      valid: false,
+      error: `Verification error: ${error.message}`
+    }
+  }
+}
+```
+
+### For Web Crypto API (Browser Native)
+
+```javascript
+const verifySignature = async (originalMessage, providedSignature, publicKey) => {
+  try {
+    // Convert message to buffer
+    const messageBuffer = new TextEncoder().encode(originalMessage)
+
+    // Convert signature from base64
+    const signatureBuffer = Uint8Array.from(atob(providedSignature), c => c.charCodeAt(0))
+
+    // Import the public key
+    const cryptoKey = await crypto.subtle.importKey(
+      'spki',
+      publicKey,
+      {
+        name: 'ECDSA',
+        namedCurve: 'P-256'
+      },
+      false,
+      ['verify']
+    )
+
+    // Verify the signature
+    const isValid = await crypto.subtle.verify(
+      {
+        name: 'ECDSA',
+        hash: { name: 'SHA-256' }
+      },
+      cryptoKey,
+      signatureBuffer,
+      messageBuffer
+    )
+
+    if (!isValid) {
+      return {
+        valid: false,
+        error: 'Signature does not match the challenge message.'
+      }
+    }
+
+    return { valid: true }
+  } catch (error) {
+    return {
+      valid: false,
+      error: `Verification error: ${error.message}`
+    }
+  }
+}
+```
+
+## Security Checklist
+
+When implementing real signature verification, ensure:
+
+- [ ] **Message Integrity**: Verify signature against the EXACT challenge message generated by your app
+- [ ] **Nonce Tracking**: Store used nonces in a database to prevent replay attacks
+- [ ] **Timestamp Validation**: Reject challenges older than a reasonable time window (e.g., 5 minutes)
+- [ ] **Public Key Validation**: Verify the public key/address is authorized (if applicable)
+- [ ] **Signature Format**: Validate signature encoding (base64, hex, DER, etc.)
+- [ ] **Error Handling**: Never leak information about why verification failed in production
+- [ ] **Rate Limiting**: Prevent brute force attempts at signature verification
+- [ ] **Secure Transport**: Use HTTPS to prevent MITM attacks
+- [ ] **Session Management**: Implement proper session tokens after successful authentication
+- [ ] **Logging**: Log authentication attempts (successful and failed) for security auditing
+
+## Additional Resources
+
+- [Bitcoin SV Message Signing](https://wiki.bitcoinsv.io/index.php/Message_Signing)
+- [ECDSA Signature Verification](https://cryptobook.nakov.com/digital-signatures/ecdsa-sign-verify-messages)
+- [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/verify)
+- [OWASP Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html)
+
+## Current Implementation Status
+
+✅ **IMPLEMENTED**: This application now uses **BRC-77 MESSAGE SIGNATURE VERIFICATION** using the BSV SDK.
+
+### BRC-77: Message Signature Creation and Verification
+
+BRC-77 is the Bitcoin SV standard for message signatures. The specification defines:
+
+**Signature Format (140-141 bytes):**
+- **Version**: 4 bytes (`0x42423301`)
+- **Signer ID**: 33 bytes (DER compressed public key)
+- **Verifier ID**: 1 or 33 bytes (`0x00` for public signatures)
+- **Key ID**: 32 bytes (unique identifier)
+- **Signature**: Variable length (BRC-3 DER-formatted ECDSA signature)
+
+**Related Standards:**
+- BRC-3: Digital Signature Creation and Verification (used in this demo)
+- BRC-42: Key Derivation (supported by BRC-77 spec, not used in this simplified demo)
+- BRC-43: Invoice Numbers (supported by BRC-77 spec, not used in this simplified demo)
+
+**Note:** This demo uses a simplified identity approach with a single key pair derived from a seed using HMAC with "identity key 1" as the message. The BRC-77 format supports more advanced features like BRC-42/43, but they are not required for basic signature verification.
+
+**Reference:** https://brc.dev/77
+
+The verification performs:
+- ✅ BRC-77 signature format parsing (140-141 bytes)
+- ✅ UTF-8 message encoding using BSV SDK Utils
+- ✅ Cryptographic verification using SignedMessage.verify()
+- ✅ Verification against the exact challenge message byte-for-byte
+- ✅ Prevention of message tampering (signatures won't verify if message is modified)
+- ⚠️ Nonce/timestamp checking for replay attack prevention (recommended to add)
+
+### What's Implemented
+
+The app now:
+1. Encodes the challenge message as UTF-8 byte array using Utils.toArray()
+2. Decodes the base64 BRC-77 signature (140-141 bytes)
+3. Verifies the signature using SignedMessage.verify() from @bsv/sdk
+4. Verifies the signature cryptographically against the exact challenge message
+5. Rejects any signature that doesn't match the exact challenge message
+
+### Production Recommendations
+
+For production use, consider adding:
+- **Nonce tracking**: Store used nonces in a database to prevent replay attacks
+- **Timestamp validation**: Reject challenges older than 5 minutes
+- **Public key allowlist**: Optionally verify recovered keys against authorized list
+- **Rate limiting**: Prevent brute force attempts
+- **Session management**: Issue JWT or session tokens after successful verification
